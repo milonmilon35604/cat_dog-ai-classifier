@@ -1,3 +1,5 @@
+import os
+import urllib.request
 import streamlit as st
 import tensorflow as tf
 import numpy as np
@@ -115,8 +117,15 @@ def load_model():
 
 @st.cache_resource
 def load_face_detector():
-    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    return cv2.CascadeClassifier(cascade_path)
+    xml_name = "haarcascade_frontalface_default.xml"
+    if not os.path.exists(xml_name):
+        url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
+        try:
+            urllib.request.urlretrieve(url, xml_name)
+        except Exception:
+            return None
+    classifier = cv2.CascadeClassifier(xml_name)
+    return classifier if not classifier.empty() else None
 
 model = load_model()
 infer = model.signatures["serving_default"]
@@ -151,11 +160,18 @@ if uploaded_file is not None:
 
         if st.button("⚡ Run Classification"):
             with st.spinner("Analyzing image features..."):
-                # 1. Human Face Check using OpenCV
-                gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
-                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                # 1. Safe Human Face Check
+                has_human = False
+                if face_cascade is not None:
+                    try:
+                        gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
+                        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                        if len(faces) > 0:
+                            has_human = True
+                    except Exception:
+                        has_human = False
 
-                if len(faces) > 0:
+                if has_human:
                     st.markdown('<div class="badge badge-human">👤 HUMAN DETECTED</div>', unsafe_allow_html=True)
                     st.error("This appears to be a human picture, not a cat or dog.")
                 else:
@@ -167,7 +183,6 @@ if uploaded_file is not None:
                     prediction = infer(tf.constant(img_array))
                     raw_score = list(prediction.values())[0].numpy()[0][0]
 
-                    # Standard classification boundary
                     if raw_score >= 0.50:
                         confidence = float(raw_score * 100)
                         st.markdown('<div class="badge badge-dog">🐶 DOG DETECTED</div>', unsafe_allow_html=True)
