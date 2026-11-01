@@ -1,10 +1,7 @@
-import os
-import urllib.request
 import streamlit as st
 import tensorflow as tf
 import numpy as np
 from PIL import Image
-import cv2
 
 # -----------------------
 # Page Configuration
@@ -73,7 +70,7 @@ st.markdown("""
         border: 1px solid #f472b6;
         color: #f472b6;
     }
-    .badge-human {
+    .badge-unknown {
         background: rgba(239, 68, 68, 0.15);
         border: 1px solid #ef4444;
         color: #f87171;
@@ -108,28 +105,15 @@ st.markdown('<div class="main-title">🐾 Cat vs Dog AI Classifier</div>', unsaf
 st.markdown('<div class="sub-title">Upload an image and let AI analyze whether it is a Cat or a Dog.</div>', unsafe_allow_html=True)
 
 # -----------------------
-# Load Model & Face Detector
+# Load Model
 # -----------------------
 @st.cache_resource
 def load_model():
     model = tf.saved_model.load("save_model")
     return model
 
-@st.cache_resource
-def load_face_detector():
-    xml_name = "haarcascade_frontalface_default.xml"
-    if not os.path.exists(xml_name):
-        url = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
-        try:
-            urllib.request.urlretrieve(url, xml_name)
-        except Exception:
-            return None
-    classifier = cv2.CascadeClassifier(xml_name)
-    return classifier if not classifier.empty() else None
-
 model = load_model()
 infer = model.signatures["serving_default"]
-face_cascade = load_face_detector()
 
 # -----------------------
 # File Uploader
@@ -145,7 +129,6 @@ uploaded_file = st.file_uploader(
 # -----------------------
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
-    np_img = np.array(image)
 
     col_img, col_pred = st.columns([1.1, 1], gap="large")
 
@@ -160,40 +143,31 @@ if uploaded_file is not None:
 
         if st.button("⚡ Run Classification"):
             with st.spinner("Analyzing image features..."):
-                # 1. Safe Human Face Check
-                has_human = False
-                if face_cascade is not None:
-                    try:
-                        gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
-                        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-                        if len(faces) > 0:
-                            has_human = True
-                    except Exception:
-                        has_human = False
+                img = image.resize((128, 128))
+                img_array = np.array(img) / 255.0
+                img_tensor = np.expand_dims(img_array, axis=0).astype(np.float32)
 
-                if has_human:
-                    st.markdown('<div class="badge badge-human">👤 HUMAN DETECTED</div>', unsafe_allow_html=True)
-                    st.error("This appears to be a human picture, not a cat or dog.")
+                prediction = infer(tf.constant(img_tensor))
+                raw_score = list(prediction.values())[0].numpy()[0][0]
+
+                # Threshold boundary:
+                # Distinct cats produce low scores, distinct dogs produce high scores.
+                # Scores hovering in the uncertain zone (0.35 - 0.65) indicate non-pet/human/confusing images.
+                if raw_score >= 0.65:
+                    confidence = float(raw_score * 100)
+                    st.markdown('<div class="badge badge-dog">🐶 DOG DETECTED</div>', unsafe_allow_html=True)
+                    st.progress(min(int(confidence), 100) / 100.0)
+                    st.metric(label="Certainty", value=f"{confidence:.2f}%")
+                    st.balloons()
+                elif raw_score <= 0.35:
+                    confidence = float((1.0 - raw_score) * 100)
+                    st.markdown('<div class="badge badge-cat">🐱 CAT DETECTED</div>', unsafe_allow_html=True)
+                    st.progress(min(int(confidence), 100) / 100.0)
+                    st.metric(label="Certainty", value=f"{confidence:.2f}%")
                 else:
-                    # 2. Run Classification Model
-                    img = image.resize((128, 128))
-                    img_array = np.array(img) / 255.0
-                    img_array = np.expand_dims(img_array, axis=0).astype(np.float32)
-
-                    prediction = infer(tf.constant(img_array))
-                    raw_score = list(prediction.values())[0].numpy()[0][0]
-
-                    if raw_score >= 0.50:
-                        confidence = float(raw_score * 100)
-                        st.markdown('<div class="badge badge-dog">🐶 DOG DETECTED</div>', unsafe_allow_html=True)
-                        st.progress(min(int(confidence), 100) / 100.0)
-                        st.metric(label="Certainty", value=f"{confidence:.2f}%")
-                        st.balloons()
-                    else:
-                        confidence = float((1.0 - raw_score) * 100)
-                        st.markdown('<div class="badge badge-cat">🐱 CAT DETECTED</div>', unsafe_allow_html=True)
-                        st.progress(min(int(confidence), 100) / 100.0)
-                        st.metric(label="Certainty", value=f"{confidence:.2f}%")
+                    st.markdown('<div class="badge badge-unknown">⚠️ UNKNOWN OBJECT</div>', unsafe_allow_html=True)
+                    st.warning("Could not clearly identify a cat or a dog. Please upload a clear photo of a domestic cat or dog.")
+                    st.caption(f"Confidence was indeterminate (raw score: {raw_score:.2f}).")
         else:
             st.info("Click **⚡ Run Classification** to identify the pet.")
 
